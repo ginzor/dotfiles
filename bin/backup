@@ -1,0 +1,108 @@
+#!/bin/bash
+
+set -o nounset
+
+function usage {
+    echo "Usage: $(basename $0) -s <source> -d <destination> [OPTION] ... [INCLUDE] ...
+
+Backup all listed INCLUDEs or everything from \$source to \$destination.
+All INCLUDEs will be copied from \$source to \$destindation/\$name-$seqtempl.
+If no INCLUDEs are given, everything from \$source will be copied.
+
+One of \$source or \$destination may be ssh paths (user@host:dir).
+
+  Options:
+    -s source       root directory to backup from
+    -d destination  root directory of destination
+    -n name         name of backup, default backup
+    -k numkeep      keep the latest \$numkeep named \$name
+    -v              verbose mode, give twice to trace script source
+    -h              print this help and exit"
+}
+
+function die {
+    echo "$@" >&2
+    exit 1
+}
+
+# Defaults
+name=backup
+verbose=false
+seqtempl="%Y-%m-%dT%H%M%S"
+
+
+# Read input
+while getopts "hvs:d:n:k:" flag; do
+    case $flag in
+        h) usage; exit 0;;
+        v) $verbose && set -x; verbose=true;;
+        s) srcroot="$OPTARG";;
+        d) destroot="$OPTARG";;
+        n) name="$OPTARG";;
+        k) numkeep="$OPTARG";;
+        ?) exit 1;;
+    esac
+done
+
+shift $((OPTIND-1))
+[ $# -eq 0 ] && set "" # By default, backup everything in srcroot
+
+[ "${srcroot:-}" ] || die "Missing source"
+[ "${destroot:-}" ] || die "Missing destination"
+
+function destsh {
+    # Execute command on destination; either local or ssh remote
+    if [[ "$destroot" == *:* ]]; then
+        destsh="$(which ssh) -T ${destroot%%:*}"
+    else
+        destsh="$(which bash)"
+    fi
+    echo $@ | $destsh
+}
+
+
+# Prepare
+this="$name-$(date "+$seqtempl")"
+
+# Directory is after the colon, if any
+destdir="${destroot#*:}/$this"
+$verbose && echo "Destination: $destdir"
+
+
+# Backup
+destsh mkdir -p \"$destdir\" || die "Failed to mkdir"
+
+haderror=false
+while [ $# -gt 0 ]; do
+    $verbose && echo "Backing up $srcroot$1"
+
+    rsync -azP $($verbose || echo -q) \
+          --delete \
+          --recursive \
+          --link-dest=../latest \
+          "$srcroot$1" "$destroot/$this/" || haderror=true
+    shift
+done
+
+# If some backup went wrong
+$haderror && {
+    destsh mv \"$destdir/../{,failed-}$this\"
+}
+
+# If all backups were good
+$haderror || {
+    destsh rm -f \"$destdir/../latest\"
+    destsh ln -s \"$this\" \"$destdir/../latest\" || haderror=true
+
+    # Rotate
+    if [ "${numkeep:-}" ]; then
+        for old in $(destsh find "$destdir/.." -name \"$name-*\" \
+                                | sort -r \
+                                | tail -n +$(( numkeep+1 )) ); do
+            $verbose && echo "Removing $old"
+            destsh rm -rf \"$old\" || haderror=true
+        done
+    fi
+}
+
+$haderror && exit 1 || exit 0
