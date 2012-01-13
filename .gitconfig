@@ -1,0 +1,8 @@
+[color]
+	status = auto
+	ui = auto
+[user]
+	name = Axel Lyckberg
+	email = axel.lyckberg@playscan.com
+[push]
+	default = tracking
